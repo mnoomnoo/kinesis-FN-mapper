@@ -11,10 +11,10 @@ import "keydata.js" as KeyData
 PlasmoidItem {
     id: root
 
-    // Path to the config-driven daemon. Auto-derived at startup from this
-    // package's own install location (see Component.onCompleted); the value
-    // below is only a fallback if that derivation fails.
-    property string daemonPath: "/home/desky/pprojects/kinesis_plasmoid/fn_remap.py"
+    // Path to the config-driven daemon. Derived at startup from this package's
+    // own install location (see Component.onCompleted) so the repo works from
+    // any clone location on any machine — no hardcoded path.
+    property string daemonPath: ""
     property string homePath: ""
     property string configPath: ""
 
@@ -167,10 +167,11 @@ PlasmoidItem {
         // the install symlink back to the real repo (and fails if it's missing).
         var uiDir = Qt.resolvedUrl(".").toString()
                        .replace(/^file:\/\//, "").replace(/\/$/, "")
-        executable.run("realpath -e " + sh(uiDir + "/../../../fn_remap.py"),
+        root.daemonPath = uiDir + "/../../../fn_remap.py"   // portable fallback
+        executable.run("realpath -e " + sh(root.daemonPath),
             function (out, err, code) {
                 var p = out.trim()
-                if (code === 0 && p.length) root.daemonPath = p
+                if (code === 0 && p.length) root.daemonPath = p   // clean, verified path
                 else root.message = "Could not locate fn_remap.py — using default path"
             })
 

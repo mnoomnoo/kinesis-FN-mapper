@@ -38,8 +38,8 @@ runs the daemon via `pkexec`. The config is the contract between the two.
 ## Install
 
 ```bash
-git clone <this-repo> kinesis-fn-mapper
-cd kinesis-fn-mapper
+git clone https://github.com/mnoomnoo/kinesis-FN-mapper.git
+cd kinesis-FN-mapper
 ```
 
 **1. Install the daemon dependency** (`python-evdev`) — use your distro package if
@@ -166,6 +166,18 @@ kquitapp6 plasmashell && kstart plasmashell
 ```
 
 (or just remove and re-add the widget).
+
+### Previewing with plasmoidviewer
+
+To run the widget in its own window without touching the panel — and without even
+installing it — point `plasmoidviewer` (from `plasma-sdk`) at the package dir:
+
+```bash
+plasmoidviewer -a ~/pprojects/kinesis-FN-mapper/plasmoid
+```
+
+It still locates `fn_remap.py` (resolved relative to the package), so `Start`/
+`Restart` work as usual.
 
 ### File map
 
