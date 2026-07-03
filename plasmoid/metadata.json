@@ -3,14 +3,15 @@
     "KPlugin": {
         "Id": "com.desky.kinesisfn",
         "Name": "Kinesis FN Mapper",
-        "Description": "Visually edit the Kinesis Freestyle2 FN-layer key mappings used by fn_remap.py",
+        "Description": "Visually edit the Kinesis Freestyle2 FN-layer key mappings",
         "Icon": "kinesisfn",
         "Category": "Utilities",
         "Authors": [
-            { "Name": "OB" }
+            { "Name": "Oliver B" }
         ],
         "License": "MIT",
         "Version": "1.0.0",
+        "Website": "https://github.com/mnoomnoo/kinesis-FN-mapper",
         "EnabledByDefault": true
     },
     "X-Plasma-API-Minimum-Version": "6.0"
