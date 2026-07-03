@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+  <!-- Kinesis FN Mapper icon (placeholder). Replace with custom artwork if desired;
+       keep this path/name so no code changes are needed. -->
+  <!-- keyboard body -->
+  <rect x="4" y="11" width="40" height="26" rx="4"
+        fill="#3d4b5c" stroke="#8a97a8" stroke-width="1.5"/>
+  <!-- top row keys -->
+  <g fill="#c7d0db">
+    <rect x="8"  y="15" width="4" height="4" rx="1"/>
+    <rect x="14" y="15" width="4" height="4" rx="1"/>
+    <rect x="20" y="15" width="4" height="4" rx="1"/>
+    <rect x="26" y="15" width="4" height="4" rx="1"/>
+    <rect x="32" y="15" width="4" height="4" rx="1"/>
+  </g>
+  <!-- middle row keys -->
+  <g fill="#c7d0db">
+    <rect x="8"  y="21" width="4" height="4" rx="1"/>
+    <rect x="14" y="21" width="4" height="4" rx="1"/>
+    <rect x="20" y="21" width="4" height="4" rx="1"/>
+    <rect x="26" y="21" width="4" height="4" rx="1"/>
+  </g>
+  <!-- accented FN key -->
+  <rect x="32" y="21" width="8" height="10" rx="1.5" fill="#3daee9"/>
+  <text x="36" y="28.5" font-family="sans-serif" font-size="6" font-weight="bold"
+        text-anchor="middle" fill="#082635">FN</text>
+  <!-- spacebar -->
+  <rect x="8" y="27" width="20" height="4" rx="1" fill="#c7d0db"/>
+</svg>
