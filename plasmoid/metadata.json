@@ -10,7 +10,7 @@
             { "Name": "OB" }
         ],
         "License": "MIT",
-        "Version": "1.0",
+        "Version": "1.0.0",
         "EnabledByDefault": true
     },
     "X-Plasma-API-Minimum-Version": "6.0"
