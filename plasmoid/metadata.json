@@ -12,6 +12,7 @@
         "License": "MIT",
         "Version": "1.0.0",
         "Website": "https://github.com/mnoomnoo/kinesis-FN-mapper",
+        "BugReportUrl": "https://github.com/mnoomnoo/kinesis-FN-mapper/issues",
         "EnabledByDefault": true
     },
     "X-Plasma-API-Minimum-Version": "6.0"
