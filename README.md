@@ -6,27 +6,6 @@ Remap the **FN-layer keys** of a Kinesis Freestyle2 (KB800) keyboard on KDE Plas
 > Kinesis Corporation. "Kinesis", "Freestyle2", and "KB800" are trademarks of their
 > respective owners and are used here only to describe hardware compatibility.
 
-The project has two parts that share a single JSON config file:
-
-- **`fn_remap.py`** — a small root daemon that intercepts the keyboard and rewrites
-  its FN-layer keys (numpad overlay + media keys) into whatever you tell it: pass
-  through, block, remap to another key/combo, or launch a command.
-- **`plasmoid/`** (`com.desky.kinesisfn`) — a Plasma 6 widget that edits that config
-  visually — a tile grid laid out like the keyboard's blue FN legends — and
-  start/stops the daemon for you.
-
-## How it works
-
-On the KB800 the **FN** key is handled in firmware and is invisible to software; all
-it does is make the affected keys emit *different* keycodes (numpad codes, media
-codes). `fn_remap.py` takes exclusive control of the keyboard's evdev node with
-`EVIOCGRAB`, re-emits every ordinary key untouched through a `uinput` virtual
-keyboard, and for the FN-layer keycodes applies the action from the config. Keying
-off those codes is effectively "FN + key".
-
-The plasmoid never touches the keyboard directly — it just edits the shared JSON and
-runs the daemon via `pkexec`. The config is the contract between the two.
-
 ## Requirements
 
 - **KDE Plasma 6** (the applet requires Plasma API ≥ 6.0)
@@ -179,17 +158,6 @@ plasmoidviewer -a ~/pprojects/kinesis-FN-mapper/plasmoid
 It still locates `fn_remap.py` (resolved relative to the package), so `Start`/
 `Restart` work as usual.
 
-### File map
-
-| Path | What it is |
-|------|-----------|
-| `fn_remap.py` | The daemon: device grab, uinput mirror, action loop, config I/O. |
-| `plasmoid/metadata.json` | Applet id (`com.desky.kinesisfn`), name, Plasma API version. |
-| `plasmoid/contents/ui/main.qml` | Root applet: config load/save, daemon control (`pkexec`), tile layout. |
-| `plasmoid/contents/ui/KeyEditor.qml` | Per-key editor (action type + parameters). |
-| `plasmoid/contents/ui/NumpadKey.qml` | A single key tile + action badge. |
-| `plasmoid/contents/ui/keydata.js` | The FN key set, the visual numpad/column layout, and the remap-target list. |
-
 ### Adding or changing an FN key
 
 The FN key set is defined in **two** places that must stay in sync:
@@ -203,6 +171,18 @@ The FN key set is defined in **two** places that must stay in sync:
 
 Run it in a terminal (`sudo python3 fn_remap.py`) to watch its startup line (which
 device/config it grabbed and how many keys) and `run`-action logs.
+
+## How it works
+
+On the KB800 the **FN** key is handled in firmware and is invisible to software; all
+it does is make the affected keys emit *different* keycodes (numpad codes, media
+codes). `fn_remap.py` takes exclusive control of the keyboard's evdev node with
+`EVIOCGRAB`, re-emits every ordinary key untouched through a `uinput` virtual
+keyboard, and for the FN-layer keycodes applies the action from the config. Keying
+off those codes is effectively "FN + key".
+
+The plasmoid never touches the keyboard directly — it just edits the shared JSON and
+runs the daemon via `pkexec`. The config is the contract between the two.
 
 ## License & Trademarks
 

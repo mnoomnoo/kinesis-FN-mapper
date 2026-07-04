@@ -99,7 +99,9 @@ PlasmoidItem {
         root.allRows = flat
         root.rowsByGroup = byGroup
         root.rowByCode = byCode
-        root.selectedEntry = null
+        // pre-select Mute so the editor opens populated (all controls visible)
+        // at startup instead of showing an empty reserved slot
+        root.selectedEntry = byCode["KEY_MUTE"] || (flat.length ? flat[0] : null)
         root.rev++
         root.dirty = false
     }
@@ -219,154 +221,186 @@ PlasmoidItem {
     }
 
     // --- full representation ------------------------------------------------
-    fullRepresentation: ColumnLayout {
+    fullRepresentation: Item {
         Layout.minimumWidth: Kirigami.Units.gridUnit * 22
         Layout.preferredWidth: Kirigami.Units.gridUnit * 26
-        // Grow the popup to fit all content (no scroll): request exactly the
-        // summed height of the children rather than a fixed height.
-        Layout.preferredHeight: implicitHeight
-        spacing: Kirigami.Units.smallSpacing
+        // size the popup to the content column. The editor's slot is reserved
+        // in the column at all times (see the KeyEditor below), so this height
+        // is constant — the popup no longer grows/collapses as keys are
+        // selected. No maximumHeight clamp so the column always gets its full
+        // implicit height.
+        implicitWidth: col.implicitWidth
+        implicitHeight: col.implicitHeight
+        Layout.preferredHeight: col.implicitHeight
 
-        // header: status pill + daemon controls
-        RowLayout {
-            Layout.fillWidth: true
+        // click-off-a-key dismiss: clicks on empty popup space fall through to
+        // here (tiles, editor, and chrome buttons consume their own clicks) and
+        // close the editor by clearing the selection
+        MouseArea {
+            anchors.fill: parent
+            onClicked: root.selectedEntry = null
+        }
+
+        ColumnLayout {
+            id: col
+            anchors.fill: parent
             spacing: Kirigami.Units.smallSpacing
 
-            Rectangle {
-                radius: height / 2
-                implicitHeight: Kirigami.Units.gridUnit * 1.4
-                implicitWidth: statusRow.implicitWidth + Kirigami.Units.largeSpacing
-                color: Qt.rgba(pillColor.r, pillColor.g, pillColor.b, 0.15)
-                readonly property color pillColor: root.running ? "#2ecc71"
-                                                                : Kirigami.Theme.disabledTextColor
-                RowLayout {
-                    id: statusRow
-                    anchors.centerIn: parent
-                    spacing: Kirigami.Units.smallSpacing
-                    Rectangle {
-                        width: Kirigami.Units.gridUnit * 0.6; height: width; radius: width / 2
-                        color: parent.parent.pillColor
-                    }
-                    PlasmaComponents3.Label {
-                        text: root.running ? "Running" : "Stopped"
-                        color: parent.parent.pillColor
-                    }
-                }
-            }
-
-            Item { Layout.fillWidth: true }
-
-            PlasmaComponents3.Button {
-                icon.name: root.running ? "media-playback-stop" : "media-playback-start"
-                text: root.running ? "Stop" : "Start"
-                onClicked: root.running ? root.stopDaemon() : root.startDaemon()
-            }
-            PlasmaComponents3.Button {
-                display: PlasmaComponents3.AbstractButton.IconOnly
-                icon.name: "view-refresh"
-                text: "Restart daemon"
-                highlighted: root.dirty
-                QQC2.ToolTip.text: text
-                QQC2.ToolTip.visible: hovered
-                onClicked: root.restartDaemon()
-            }
-        }
-
-        PlasmaComponents3.Label {
-            visible: root.message.length > 0
-            text: root.message
-            font: Kirigami.Theme.smallFont
-            opacity: 0.8
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
-        }
-
-        Kirigami.Separator { Layout.fillWidth: true }
-
-        // key map, laid out like the physical KB800 blue FN legends: embedded
-        // keypad (digits + operator column) beside the vertical FN key column
-        RowLayout {
-            Layout.fillWidth: true
-            Layout.alignment: Qt.AlignTop
-            spacing: Kirigami.Units.largeSpacing
-
-            // digit / operator keypad
-            GridLayout {
-                Layout.alignment: Qt.AlignTop
+            // header: status pill + daemon controls
+            RowLayout {
                 Layout.fillWidth: true
-                columns: 4
-                rowSpacing: Kirigami.Units.smallSpacing
-                columnSpacing: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
 
-                Repeater {
-                    model: root.gridCells()
-                    delegate: Item {
-                        required property var modelData
-                        Layout.fillWidth: true
-                        Layout.columnSpan: modelData.span
-                        // equal base width per column so the grid stays aligned
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 3 * modelData.span
-                        // follow the tile's content height so badges aren't clipped
-                        Layout.preferredHeight: cellKey.implicitHeight
-                        Layout.minimumHeight: cellKey.implicitHeight
-                        implicitHeight: cellKey.implicitHeight
-
-                        NumpadKey {
-                            id: cellKey
-                            anchors.fill: parent
-                            visible: parent.modelData.code !== ""
-                            entry: root.rowByCode[parent.modelData.code]
-                            rev: root.rev
-                            selected: entry && root.selectedEntry === entry
-                            onClicked: root.selectedEntry = entry
+                Rectangle {
+                    radius: height / 2
+                    implicitHeight: Kirigami.Units.gridUnit * 1.4
+                    implicitWidth: statusRow.implicitWidth + Kirigami.Units.largeSpacing
+                    color: Qt.rgba(pillColor.r, pillColor.g, pillColor.b, 0.15)
+                    readonly property color pillColor: root.running ? "#2ecc71"
+                                                                    : Kirigami.Theme.disabledTextColor
+                    RowLayout {
+                        id: statusRow
+                        anchors.centerIn: parent
+                        spacing: Kirigami.Units.smallSpacing
+                        Rectangle {
+                            width: Kirigami.Units.gridUnit * 0.6; height: width; radius: width / 2
+                            color: parent.parent.pillColor
+                        }
+                        PlasmaComponents3.Label {
+                            text: root.running ? "Running" : "Stopped"
+                            color: parent.parent.pillColor
                         }
                     }
                 }
-            }
 
-            // far-right vertical FN column: media then locks
-            ColumnLayout {
-                Layout.alignment: Qt.AlignTop
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 5
-                spacing: Kirigami.Units.smallSpacing
-                Repeater {
-                    model: KeyData.FN_COLUMN
-                    delegate: NumpadKey {
-                        required property var modelData
-                        entry: root.rowByCode[modelData]
-                        rev: root.rev
-                        selected: root.selectedEntry === entry
-                        onClicked: root.selectedEntry = entry
-                    }
+                Item { Layout.fillWidth: true }
+
+                PlasmaComponents3.Button {
+                    icon.name: root.running ? "media-playback-stop" : "media-playback-start"
+                    text: root.running ? "Stop" : "Start"
+                    onClicked: root.running ? root.stopDaemon() : root.startDaemon()
+                }
+                PlasmaComponents3.Button {
+                    display: PlasmaComponents3.AbstractButton.IconOnly
+                    icon.name: "view-refresh"
+                    text: "Restart daemon"
+                    highlighted: root.dirty
+                    QQC2.ToolTip.text: text
+                    QQC2.ToolTip.visible: hovered
+                    onClicked: root.restartDaemon()
                 }
             }
-        }
 
-        // editor for the selected key
-        KeyEditor {
-            Layout.fillWidth: true
-            // never let the layout squeeze the box below its content, or the
-            // note at the bottom renders outside the rounded border
-            Layout.minimumHeight: implicitHeight
-            visible: root.selectedEntry !== null
-            entry: root.selectedEntry
-            onEdited: { root.dirty = true; root.rev++ }
-        }
-
-        // footer: reload / save
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
-            Item { Layout.fillWidth: true }
-            PlasmaComponents3.Button {
-                text: "Reload"; icon.name: "document-revert"
-                onClicked: { root.message = ""; root.readConfig() }
+            PlasmaComponents3.Label {
+                visible: root.message.length > 0
+                text: root.message
+                font: Kirigami.Theme.smallFont
+                opacity: 0.8
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
             }
-            PlasmaComponents3.Button {
-                text: "Save"; icon.name: "document-save"
-                enabled: root.dirty
-                highlighted: root.dirty
-                onClicked: root.writeConfig()
+
+            Kirigami.Separator { Layout.fillWidth: true }
+
+            // key map, laid out like the physical KB800 blue FN legends: embedded
+            // keypad (digits + operator column) beside the vertical FN key column
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
+                spacing: Kirigami.Units.largeSpacing
+
+                // digit / operator keypad
+                GridLayout {
+                    Layout.alignment: Qt.AlignTop
+                    Layout.fillWidth: true
+                    columns: 4
+                    rowSpacing: Kirigami.Units.smallSpacing
+                    columnSpacing: Kirigami.Units.smallSpacing
+
+                    Repeater {
+                        model: root.gridCells()
+                        delegate: Item {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.columnSpan: modelData.span
+                            // equal base width per column so the grid stays aligned
+                            Layout.preferredWidth: Kirigami.Units.gridUnit * 3 * modelData.span
+                            // follow the tile's content height so badges aren't clipped
+                            Layout.preferredHeight: cellKey.implicitHeight
+                            Layout.minimumHeight: cellKey.implicitHeight
+                            implicitHeight: cellKey.implicitHeight
+
+                            NumpadKey {
+                                id: cellKey
+                                anchors.fill: parent
+                                visible: parent.modelData.code !== ""
+                                entry: root.rowByCode[parent.modelData.code]
+                                rev: root.rev
+                                selected: entry && root.selectedEntry === entry
+                                onClicked: root.selectedEntry = entry
+                            }
+                        }
+                    }
+                }
+
+                // far-right vertical FN column: media then locks
+                ColumnLayout {
+                    Layout.alignment: Qt.AlignTop
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                    spacing: Kirigami.Units.smallSpacing
+                    Repeater {
+                        model: KeyData.FN_COLUMN
+                        delegate: NumpadKey {
+                            required property var modelData
+                            // keep natural height so the column stays pinned to
+                            // the top instead of stretching to fill the row
+                            Layout.fillHeight: false
+                            entry: root.rowByCode[modelData]
+                            rev: root.rev
+                            selected: root.selectedEntry === entry
+                            onClicked: root.selectedEntry = entry
+                        }
+                    }
+                    // absorb any leftover vertical space at the bottom
+                    Item { Layout.fillHeight: true }
+                }
+            }
+
+            // editor for the selected key. Its slot stays reserved in the
+            // column at all times so the popup is a constant height: opacity
+            // (unlike visible) keeps the item in the layout, so col.implicitHeight
+            // always includes the editor and the popup never grows/shrinks as
+            // keys are selected/deselected. `enabled` follows the selection so
+            // the hidden editor can't take focus, and its click-catcher stays
+            // transparent to the popup's background dismiss handler.
+            KeyEditor {
+                id: keyEditor
+                Layout.fillWidth: true
+                // never let the layout squeeze the box below its content, or the
+                // note at the bottom renders outside the rounded border
+                Layout.minimumHeight: implicitHeight
+                Layout.preferredHeight: implicitHeight
+                opacity: root.selectedEntry !== null ? 1 : 0
+                enabled: root.selectedEntry !== null
+                entry: root.selectedEntry
+                onEdited: { root.dirty = true; root.rev++ }
+            }
+
+            // footer: reload / save
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                Item { Layout.fillWidth: true }
+                PlasmaComponents3.Button {
+                    text: "Reload"; icon.name: "document-revert"
+                    onClicked: { root.message = ""; root.readConfig() }
+                }
+                PlasmaComponents3.Button {
+                    text: "Save"; icon.name: "document-save"
+                    enabled: root.dirty
+                    highlighted: root.dirty
+                    onClicked: root.writeConfig()
+                }
             }
         }
     }
