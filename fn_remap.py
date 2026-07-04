@@ -209,6 +209,132 @@ def invoking_user_ids():
     return None
 
 
+# --- launching "run" commands as the desktop user ---------------------------
+# The daemon runs as root (pkexec strips the environment), so a "run" action must
+# NOT fire the command as-is: root has no graphical session (no DISPLAY/WAYLAND_
+# DISPLAY, DBUS, XDG_RUNTIME_DIR), and GUI apps like `code` would either fail to
+# reach the compositor or refuse to run as root. We demote to the invoking user
+# and hand them back their session environment before exec.
+
+# The subset of the user's session environment a GUI command needs to reach the
+# running desktop. Copied verbatim from a live session process when we find one.
+_SESSION_VARS = (
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY",
+    "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "XDG_DATA_DIRS",
+)
+
+
+def _uid_of(pid):
+    """Real uid owning /proc/<pid>, or None if it's gone / unreadable."""
+    try:
+        return os.stat(f"/proc/{pid}").st_uid
+    except OSError:
+        return None
+
+
+def _read_environ(pid):
+    """Parse /proc/<pid>/environ (NUL-separated) into a dict, or {} if unreadable."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return {}
+    env = {}
+    for chunk in raw.split(b"\0"):
+        if b"=" in chunk:
+            k, v = chunk.split(b"=", 1)
+            env[k.decode("utf-8", "replace")] = v.decode("utf-8", "replace")
+    return env
+
+
+def session_env(uid, home, name):
+    """The environment to launch a user's "run" command in, so it reaches their
+    graphical session. Prefer copying the live session vars from a process owned by
+    `uid` that has a display set (e.g. plasmashell/kwin); otherwise synthesise the
+    reliable ones from /run/user/<uid>. Always sets HOME/USER/LOGNAME."""
+    env = dict(os.environ)  # inherit PATH etc. from the daemon, then correct identity
+    env.update(HOME=home, USER=name, LOGNAME=name)
+
+    found = None
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit() or _uid_of(entry.name) != uid:
+            continue
+        penv = _read_environ(entry.name)
+        if penv.get("WAYLAND_DISPLAY") or penv.get("DISPLAY"):
+            found = penv
+            break
+
+    if found:
+        for var in _SESSION_VARS:
+            if var in found:
+                env[var] = found[var]
+    else:
+        # No live session process visible -- fall back to the standard locations.
+        runtime = f"/run/user/{uid}"
+        env.setdefault("XDG_RUNTIME_DIR", runtime)
+        env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime}/bus")
+        env.setdefault("WAYLAND_DISPLAY", "wayland-0")
+        env.setdefault("DISPLAY", ":0")
+    return env
+
+
+def demote_preexec(uid, gid, name):
+    """Return a preexec_fn that irreversibly drops root -> (uid, gid) before exec.
+    Group changes need root, so setgid/initgroups must precede setuid; after
+    os.setuid(uid) from uid 0 the real+effective+saved uids are all `uid`, so the
+    launched command can never regain root."""
+    def _demote():
+        os.setgid(gid)
+        os.initgroups(name, gid)
+        os.setuid(uid)
+    return _demote
+
+
+def make_run_launcher():
+    """Resolve *once* how "run" actions are launched, returning launch(name, cmd).
+
+    The decision matrix guarantees a command is never executed as root:
+      - unprivileged daemon      -> run as-is (already not root);
+      - root + invoking user known -> demote to that user, inject their session env;
+      - root + user not resolvable -> refuse and warn (better a no-op than a root GUI).
+    Identity + preexec are resolved once, but the session env is captured *per-press*
+    so run-commands always target the current session (survives logout/login without a
+    daemon restart)."""
+    base = dict(shell=True, start_new_session=True,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+
+    if os.geteuid() != 0:
+        def launch(name, cmd):
+            print(f"{name}: run {cmd!r}")
+            subprocess.Popen(cmd, **base)
+        return launch
+
+    ids = invoking_user_ids()
+    pw_name = None
+    if ids is not None:
+        try:
+            pw_name = pwd.getpwuid(ids[0]).pw_name
+        except KeyError:
+            pw_name = None
+
+    if pw_name is None:
+        def launch(name, cmd):
+            print(f"{name}: refusing to run {cmd!r} as root "
+                  f"-- could not resolve the desktop user")
+        return launch
+
+    uid, gid, home = ids
+    preexec = demote_preexec(uid, gid, pw_name)
+
+    def launch(name, cmd):
+        print(f"{name}: run {cmd!r} as {pw_name}")
+        subprocess.Popen(cmd, env=session_env(uid, home, pw_name),
+                         preexec_fn=preexec, **base)
+    return launch
+
+
 def resolve_config_path(arg=None):
     """Where to read the mapping from. An explicit --config wins; otherwise the
     invoking user's ~/.config/kinesis-fn/fn_map.json (resolved even under sudo)."""
@@ -290,6 +416,7 @@ def main():
     dev = open_device(resolve_device(args.device))
     actions = load_actions(config_path)
     ui = make_uinput(dev, actions)
+    launch = make_run_launcher()
 
     print(f"grabbing {dev.path} ({dev.name!r}); "
           f"config {config_path} ({len(actions)} keys) ... Ctrl-C to stop")
@@ -332,11 +459,7 @@ def main():
                     ui.syn()
             elif kind == "run":
                 if ev.value == KEY_DOWN:  # once per press, ignore repeats
-                    print(f"{name}: run {action[1]!r}")
-                    subprocess.Popen(action[1], shell=True, start_new_session=True,
-                                     stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL,
-                                     stderr=subprocess.DEVNULL)
+                    launch(name, action[1])
     finally:
         dev.ungrab()
         ui.close()

@@ -131,7 +131,9 @@ object keyed by evdev `KEY_*` name, one entry per FN key:
 - `block` — swallow it.
 - `remap` — emit `keys` instead; **list modifiers first** (they're pressed in order
   on key-down, released in reverse on key-up).
-- `run` — run `cmd` in a shell, once per physical press.
+- `run` — run `cmd` in a shell, once per physical press. Although the daemon runs as
+  root, the command is launched **as your desktop user in your current session**, so GUI
+  apps (e.g. `code`, `kcalc`) open normally.
 
 You can edit this file by hand instead of using the widget; restart the daemon either
 way.
