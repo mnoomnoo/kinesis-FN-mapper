@@ -20,6 +20,9 @@ PlasmoidItem {
 
     property bool running: false
     property bool dirty: false
+    // in-memory key edits not yet written to disk (distinct from `dirty`, which
+    // means the saved config differs from what the daemon last (re)started with)
+    property bool unsaved: false
     property string message: ""
 
     // Matches a real daemon process only. Anchored to "^python3 " so it never
@@ -136,10 +139,11 @@ PlasmoidItem {
         var cmd = "mkdir -p " + sh(dir) + " && printf %s " + sh(b64) +
                   " | base64 -d > " + sh(configPath)
         executable.run(cmd, function (out, err, code) {
-            // dirty is left set here: it now means "config changed since the
+            // On success the file now matches the in-memory model, so `unsaved`
+            // clears. `dirty` is *set* here: it means "config changed since the
             // daemon last (re)started", so it stays true until a restart even
             // though the file is saved. Cleared in start/restartDaemon.
-            if (code === 0) { root.notify("Saved — restart to apply") }
+            if (code === 0) { root.unsaved = false; root.dirty = true; root.notify("Saved — restart to apply") }
             else { root.notify("Save failed: " + err.trim()) }
         })
     }
@@ -151,6 +155,25 @@ PlasmoidItem {
         root.dirty = true
         root.writeConfig()
         root.notify("Reset to defaults — restart to apply")
+    }
+
+    // Throw away in-memory edits by reloading the saved file (the file *is* the
+    // last-saved state). buildRows() resets dirty to false and re-selects Mute,
+    // so restore the prior dirty (a discard doesn't change the disk-vs-daemon
+    // delta) and the open key afterwards.
+    function discardChanges() {
+        var wasDirty = root.dirty
+        var selCode  = root.selectedEntry ? root.selectedEntry.code : ""
+        executable.run("cat " + sh(configPath) + " 2>/dev/null", function (out) {
+            var cfg = null, txt = out.trim()
+            if (txt.length) { try { cfg = JSON.parse(txt) } catch (e) {} }
+            root.buildRows(cfg)
+            root.dirty = wasDirty
+            root.unsaved = false
+            if (selCode && root.rowByCode[selCode])
+                root.selectedEntry = root.rowByCode[selCode]
+            root.notify("Reverted to last saved")
+        })
     }
 
     // --- daemon control -----------------------------------------------------
@@ -194,7 +217,6 @@ PlasmoidItem {
     }
 
     Timer { id: statusDelay; interval: 800; onTriggered: root.refreshStatus() }
-    Timer { id: saveTimer; interval: 500; onTriggered: root.writeConfig() }
     Timer { interval: 2000; running: true; repeat: true; onTriggered: root.refreshStatus() }
 
     // Message helpers. flash() shows a transient confirmation that clears itself
@@ -448,14 +470,32 @@ PlasmoidItem {
                 opacity: root.selectedEntry !== null ? 1 : 0
                 enabled: root.selectedEntry !== null
                 entry: root.selectedEntry
-                onEdited: { root.dirty = true; root.rev++; saveTimer.restart() }
+                // edits stay in memory; rev++ repaints tiles live. Nothing is
+                // written until the user clicks "Save changes" in the footer.
+                onEdited: { root.rev++; root.unsaved = true }
             }
 
-            // footer: reset to defaults (edits auto-save; no manual save/reload)
+            // footer: save / discard pending edits, and reset to defaults. Edits
+            // accumulate in memory and are only written to disk on "Save changes".
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
                 Item { Layout.fillWidth: true }
+                PlasmaComponents3.Button {
+                    text: "Save changes"; icon.name: "document-save"
+                    enabled: root.unsaved
+                    highlighted: root.unsaved
+                    QQC2.ToolTip.text: "Write your key changes to the config file"
+                    QQC2.ToolTip.visible: hovered
+                    onClicked: root.writeConfig()
+                }
+                PlasmaComponents3.Button {
+                    text: "Discard changes"; icon.name: "document-revert"
+                    enabled: root.unsaved
+                    QQC2.ToolTip.text: "Revert unsaved key changes to the last saved config"
+                    QQC2.ToolTip.visible: hovered
+                    onClicked: discardDialog.open()
+                }
                 PlasmaComponents3.Button {
                     text: "Reset to defaults"; icon.name: "edit-undo"
                     QQC2.ToolTip.text: "Restore every key to its default mapping"
@@ -482,6 +522,27 @@ PlasmoidItem {
                     text: "Reset"
                     icon.name: "edit-undo"
                     onTriggered: { root.resetDefaults(); resetDialog.close() }
+                }
+            ]
+        }
+
+        // confirm before throwing away unsaved edits — a discard reloads the
+        // last-saved file and cannot be undone
+        Kirigami.PromptDialog {
+            id: discardDialog
+            title: "Discard unsaved changes?"
+            subtitle: "This reverts every key to the last saved config and cannot be undone."
+            standardButtons: Kirigami.Dialog.NoButton
+            customFooterActions: [
+                Kirigami.Action {
+                    text: "Cancel"
+                    icon.name: "dialog-cancel"
+                    onTriggered: discardDialog.close()
+                },
+                Kirigami.Action {
+                    text: "Discard"
+                    icon.name: "document-revert"
+                    onTriggered: { root.discardChanges(); discardDialog.close() }
                 }
             ]
         }

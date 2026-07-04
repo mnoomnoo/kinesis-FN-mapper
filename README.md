@@ -1,10 +1,22 @@
-# Kinesis FN Mapper
+<h1>
+  <img src="plasmoid/contents/icons/kinesisfn.svg" alt="Kinesis FN Mapper icon" width="32" align="center">
+  Kinesis FN Mapper
+</h1>
 
-Remap the **FN-layer keys** of a Kinesis Freestyle2 (KB800) keyboard on KDE Plasma 6.
+Kinesis FN Mapper puts the FN-layer keys of a Kinesis Freestyle2 (KB800) keyboard to work
+on KDE Plasma 6. Those are the numpad overlay and the media/lock keys that FN normally locks
+you into. Pick any FN key in the widget and choose what it does: pass it through so it behaves
+normally, block it so it sends nothing, remap it to another key or shortcut, or run a command
+each time you press it. Everything is set up from a Plasma widget, no config files required.
 
-> **Unofficial / independent project.** Not affiliated with, endorsed by, or sponsored by
-> Kinesis Corporation. "Kinesis", "Freestyle2", and "KB800" are trademarks of their
-> respective owners and are used here only to describe hardware compatibility.
+<p align="center">
+  <img src="docs/images/overview.png" alt="Kinesis FN Mapper widget — overview" width="60%">
+  <br><em>The widget: numpad grid on the left, media/lock FN column on the right.</em>
+</p>
+
+<p align="center">
+  See <a href="docs/screenshots.md">Screenshots</a> for each action shown in the editor.
+</p>
 
 ## Requirements
 
