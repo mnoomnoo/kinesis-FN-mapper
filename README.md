@@ -3,6 +3,12 @@
   Kinesis FN Mapper
 </h1>
 
+<p align="center">
+  <a href="https://store.kde.org/p/2364571">
+    <img src="https://img.shields.io/badge/KDE_Store-Get_it-1d99f3?logo=kde&logoColor=white" alt="Get it on the KDE Store">
+  </a>
+</p>
+
 Kinesis FN Mapper puts the FN-layer keys of a Kinesis Freestyle2 (KB800) keyboard to work
 on KDE Plasma 6. Those are the numpad overlay and the media/lock keys that FN normally locks
 you into. Pick any FN key in the widget and choose what it does: pass it through so it behaves
