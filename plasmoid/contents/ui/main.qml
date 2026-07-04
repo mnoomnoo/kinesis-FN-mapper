@@ -22,6 +22,12 @@ PlasmoidItem {
     property bool dirty: false
     property string message: ""
 
+    // Matches a real daemon process only. Anchored to "^python3 " so it never
+    // matches the pkexec/sh wrapper that carries the launch command ("… python3
+    // /path/fn_remap.py …") as an argument — otherwise restart's own pkill would
+    // SIGTERM its parent shell before the relaunch runs, and nothing comes back up.
+    readonly property string daemonPattern: "^python3 .*fn_remap\\.py"
+
     property var groups: ["Numpad overlay", "Media keys"]
     property var rowsByGroup: ({})   // group name -> array of entry objects (shared refs)
     property var allRows: []         // flat list, source of truth for save
@@ -59,7 +65,7 @@ PlasmoidItem {
             var txt = out.trim()
             if (txt.length) {
                 try { cfg = JSON.parse(txt) }
-                catch (e) { root.message = "Config parse error — showing defaults" }
+                catch (e) { root.notify("Config parse error — showing defaults") }
             }
             root.buildRows(cfg)
         })
@@ -133,8 +139,8 @@ PlasmoidItem {
             // dirty is left set here: it now means "config changed since the
             // daemon last (re)started", so it stays true until a restart even
             // though the file is saved. Cleared in start/restartDaemon.
-            if (code === 0) { root.message = "Saved — restart to apply" }
-            else { root.message = "Save failed: " + err.trim() }
+            if (code === 0) { root.notify("Saved — restart to apply") }
+            else { root.notify("Save failed: " + err.trim()) }
         })
     }
 
@@ -144,37 +150,60 @@ PlasmoidItem {
         root.buildRows(KeyData.DEFAULTS)   // every key back to pass-through
         root.dirty = true
         root.writeConfig()
-        root.message = "Reset to defaults — restart to apply"
+        root.notify("Reset to defaults — restart to apply")
     }
 
     // --- daemon control -----------------------------------------------------
     function refreshStatus() {
-        executable.run("pgrep -f " + sh("python3.*fn_remap\\.py") + " >/dev/null && echo up || echo down",
+        executable.run("pgrep -f " + sh(root.daemonPattern) + " >/dev/null && echo up || echo down",
                        function (out) { root.running = (out.trim() === "up") })
     }
 
+    // pkexec exits 126 when the auth dialog is dismissed and 127 when the user
+    // is not authorised — treat both as "the action never ran".
+    function authCancelled(code) { return code === 126 || code === 127 }
+
     function startDaemon() {
-        root.message = "Starting (authorise in the prompt)…"
+        root.notify("Starting (authorise in the prompt)…")
         var inner = "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function () { root.dirty = false; statusDelay.restart() })
+        executable.run("pkexec sh -c " + sh(inner), function (out, err, code) {
+            if (authCancelled(code)) { root.flash("Start cancelled") }
+            else { root.dirty = false; root.flash("Started") }
+            statusDelay.restart()
+        })
     }
 
     function stopDaemon() {
-        root.message = "Stopping…"
-        executable.run("pkexec pkill -f " + sh("python3.*fn_remap\\.py"),
-                       function () { statusDelay.restart() })
+        root.notify("Stopping…")
+        executable.run("pkexec pkill -f " + sh(root.daemonPattern), function (out, err, code) {
+            // pkill returns 1 when nothing matched (already stopped) — still a stop.
+            root.flash(authCancelled(code) ? "Stop cancelled" : "Stopped")
+            statusDelay.restart()
+        })
     }
 
     function restartDaemon() {
-        root.message = "Restarting (authorise in the prompt)…"
-        var inner = "pkill -f 'python3.*fn_remap\\.py'; sleep 0.3; " +
+        root.notify("Restarting (authorise in the prompt)…")
+        var inner = "pkill -f " + sh(root.daemonPattern) + "; sleep 0.5; " +
                     "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function () { root.dirty = false; statusDelay.restart() })
+        executable.run("pkexec sh -c " + sh(inner), function (out, err, code) {
+            if (authCancelled(code)) { root.flash("Restart cancelled") }
+            else { root.dirty = false; root.flash("Restarted") }
+            statusDelay.restart()
+        })
     }
 
     Timer { id: statusDelay; interval: 800; onTriggered: root.refreshStatus() }
     Timer { id: saveTimer; interval: 500; onTriggered: root.writeConfig() }
     Timer { interval: 2000; running: true; repeat: true; onTriggered: root.refreshStatus() }
+
+    // Message helpers. flash() shows a transient confirmation that clears itself
+    // (the pill already conveys the running state, so "Started"/"Restarted" don't
+    // need to linger). notify() shows a sticky message and cancels any pending
+    // auto-clear, for instructions and errors that should stay until superseded.
+    Timer { id: msgClear; interval: 3000; onTriggered: root.message = "" }
+    function flash(m)  { root.message = m; msgClear.restart() }
+    function notify(m) { msgClear.stop(); root.message = m }
 
     Component.onCompleted: {
         // Derive daemonPath from this package's own location: main.qml lives at
@@ -187,7 +216,7 @@ PlasmoidItem {
             function (out, err, code) {
                 var p = out.trim()
                 if (code === 0 && p.length) root.daemonPath = p   // clean, verified path
-                else root.message = "Could not locate fn_remap.py — using default path"
+                else root.notify("Could not locate fn_remap.py — using default path")
             })
 
         executable.run("printf %s \"$HOME\"", function (out) {
@@ -265,23 +294,43 @@ PlasmoidItem {
                 spacing: Kirigami.Units.smallSpacing
 
                 Rectangle {
+                    id: statusPill
                     radius: height / 2
                     implicitHeight: Kirigami.Units.gridUnit * 1.4
                     implicitWidth: statusRow.implicitWidth + Kirigami.Units.largeSpacing
                     color: Qt.rgba(pillColor.r, pillColor.g, pillColor.b, 0.15)
-                    readonly property color pillColor: root.running ? "#2ecc71"
-                                                                    : Kirigami.Theme.disabledTextColor
+                    // running but with unsaved-to-daemon config changes pending
+                    readonly property bool needsRestart: root.running && root.dirty
+                    readonly property color pillColor: !root.running ? Kirigami.Theme.disabledTextColor
+                                                     : (needsRestart ? "#f39c12" : "#2ecc71")
+
+                    HoverHandler { id: pillHover }
+                    QQC2.ToolTip.text: statusPill.needsRestart
+                        ? "Config changed — restart the daemon to apply"
+                        : (root.running ? "FN-remap daemon is running"
+                                        : "FN-remap daemon is stopped")
+                    QQC2.ToolTip.visible: pillHover.hovered
+
                     RowLayout {
                         id: statusRow
                         anchors.centerIn: parent
                         spacing: Kirigami.Units.smallSpacing
                         Rectangle {
                             width: Kirigami.Units.gridUnit * 0.6; height: width; radius: width / 2
-                            color: parent.parent.pillColor
+                            color: statusPill.pillColor
+                            // pulse to draw the eye when a restart is pending
+                            SequentialAnimation on opacity {
+                                running: statusPill.needsRestart
+                                loops: Animation.Infinite
+                                alwaysRunToEnd: true
+                                NumberAnimation { to: 0.25; duration: 600 }
+                                NumberAnimation { to: 1.0;  duration: 600 }
+                            }
                         }
                         PlasmaComponents3.Label {
-                            text: root.running ? "Running" : "Stopped"
-                            color: parent.parent.pillColor
+                            text: statusPill.needsRestart ? "Restart to apply"
+                                : (root.running ? "Running" : "Stopped")
+                            color: statusPill.pillColor
                         }
                     }
                 }
@@ -309,8 +358,7 @@ PlasmoidItem {
             }
 
             PlasmaComponents3.Label {
-                visible: root.message.length > 0
-                text: root.message
+                text: root.message.length > 0 ? root.message : " "
                 font: Kirigami.Theme.smallFont
                 opacity: 0.8
                 Layout.fillWidth: true
