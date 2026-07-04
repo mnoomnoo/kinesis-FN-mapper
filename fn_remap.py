@@ -95,7 +95,7 @@ DEFAULT_FN_ACTIONS = {
     "KEY_MUTE":       PASS,
     "KEY_VOLUMEDOWN": PASS,
     "KEY_VOLUMEUP":   PASS,
-    "KEY_CALC":       remap("KEY_PLAYPAUSE"),
+    "KEY_CALC":       PASS,
 
 
 

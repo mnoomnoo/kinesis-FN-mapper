@@ -33,6 +33,10 @@ Rectangle {
 
     onEntryChanged: sync()
 
+    // consume clicks landing on the editor's empty areas so they don't fall
+    // through to the popup's background dismiss handler and close the editor
+    MouseArea { anchors.fill: parent }
+
     function sync() {
         if (!entry) return
         editor.type = entry.type
@@ -58,7 +62,10 @@ Rectangle {
         spacing: Kirigami.Units.smallSpacing
 
         Kirigami.Heading {
-            text: entry ? entry.label : ""
+            // a space when empty so the heading always reserves one
+            // line — keeps the editor's implicit height constant, which is what
+            // main.qml uses to reserve the editor slot at a stable size
+            text: entry ? entry.label : " "
             level: 4
             Layout.fillWidth: true
             elide: Text.ElideRight

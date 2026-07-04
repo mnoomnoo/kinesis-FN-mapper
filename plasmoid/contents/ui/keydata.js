@@ -28,6 +28,12 @@ var FN_KEYS = [
     { group: "Media keys",     code: "KEY_CALC",       label: "FN · Calc" }
 ];
 
+// Factory defaults: every FN key passes through untouched, i.e. the keyboard's
+// own native behaviour with nothing remapped. Same shape as the on-disk
+// fn_map.json so it can be fed straight to buildRows() — an empty map means
+// every key falls back to pass-through.
+var DEFAULTS = {};
+
 // Modifier keys, kept separate from remap targets: the editor exposes these as
 // Ctrl/Alt/Shift/Super toggles rather than dropdown entries.
 var MODIFIERS = ["KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_LEFTSHIFT", "KEY_LEFTMETA"];
