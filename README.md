@@ -176,6 +176,21 @@ plasmoidviewer -a ~/pprojects/kinesis-FN-mapper/plasmoid
 It still locates `fn_remap.py` (resolved relative to the package), so `Start`/
 `Restart` work as usual.
 
+### Packaging a release
+
+To build the distributable `.plasmoid` archive (the file you upload to the KDE
+Store):
+
+```bash
+./package.sh
+```
+
+It reads the version from `plasmoid/metadata.json` and writes
+`dist/kinesis-fn-mapper-<version>.plasmoid`. The archive is a ZIP with
+`metadata.json` at its **root** — the script guarantees this by zipping from inside
+`plasmoid/`. **Bump `KPlugin.Version` in `plasmoid/metadata.json` before packaging**,
+or the store will reject the re-upload as unchanged.
+
 ### Adding or changing an FN key
 
 The FN key set is defined in **two** places that must stay in sync:
