@@ -19,11 +19,17 @@ only appear while FN is held, so keying off those codes is equivalent to "FN + k
 
 The mapping table lives in a JSON config (default ~/.config/kinesis-fn/fn_map.json,
 seeded from the built-in defaults on first run) shared with the "Kinesis FN Mapper"
-KDE plasmoid, which edits it visually. The config is read once at startup; restart
-the daemon to apply edits.
+KDE plasmoid, which edits it visually. The daemon watches this file and reloads it
+live the moment it changes -- so edits (from the plasmoid or by hand) take effect
+within a second with no restart and without ever dropping the keyboard grab. A bad
+edit is ignored with a warning; the last good mapping stays in force.
 
-Usage:  sudo python3 fn_remap.py [/dev/input/eventN] [--config PATH]
+Usage:  sudo python3 fn_remap.py [/dev/input/eventN] [--config PATH] [--user NAME]
 Stop:   Ctrl-C   (the grab is always released on exit, so the keyboard recovers)
+
+--user is only needed when there is no sudo/pkexec environment to reveal the
+human behind us (i.e. the systemd system service in kinesis-fn.service); it names
+the desktop user whose config we read and to whom "run" actions are demoted.
 
 Safety: if this process ever wedges while grabbing, the keyboard appears dead until
 the grab is released. Kill the process from another terminal (pkill -f fn_remap),
@@ -34,11 +40,17 @@ import glob
 import json
 import os
 import pwd
+import select
 import subprocess
 import sys
 
 import evdev
 from evdev import ecodes
+
+
+class ConfigError(Exception):
+    """A malformed/unreadable config. Fatal at startup (fail-fast), but merely
+    warned-about on a live reload so a bad edit never kills the running daemon."""
 
 
 # --- action helpers ---------------------------------------------------------
@@ -164,10 +176,10 @@ def action_to_json(action):
 
 def json_to_action(entry, where):
     """Config entry -> internal action tuple, resolving key names to codes.
-    Exits with a clear message on any malformed/unknown entry (fail-fast, like
-    the old build_actions did for typos)."""
+    Raises ConfigError on any malformed/unknown entry (fail-fast, like the old
+    build_actions did for typos); the caller decides fatal-vs-warn."""
     if not isinstance(entry, dict):
-        sys.exit(f"malformed entry in {where}: {entry!r} (want a JSON object)")
+        raise ConfigError(f"malformed entry in {where}: {entry!r} (want a JSON object)")
     t = entry.get("type")
     if t == "pass":
         return PASS
@@ -178,10 +190,10 @@ def json_to_action(entry, where):
         try:
             return ("remap", [ecodes.ecodes[n] for n in names])
         except KeyError as e:
-            sys.exit(f"unknown key name in {where}: {e.args[0]!r}")
+            raise ConfigError(f"unknown key name in {where}: {e.args[0]!r}")
     if t == "run":
         return ("run", entry.get("cmd", ""))
-    sys.exit(f"unknown action type {t!r} in {where}")
+    raise ConfigError(f"unknown action type {t!r} in {where}")
 
 
 def default_config():
@@ -371,9 +383,9 @@ def load_actions(path):
             with open(path) as f:
                 config = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
-            sys.exit(f"cannot read config {path}: {e}")
+            raise ConfigError(f"cannot read config {path}: {e}")
         if not isinstance(config, dict):
-            sys.exit(f"config {path} must be a JSON object of KEY_* -> action")
+            raise ConfigError(f"config {path} must be a JSON object of KEY_* -> action")
 
     resolved = {}
     where = f"config {path}"
@@ -381,7 +393,7 @@ def load_actions(path):
         try:
             code = ecodes.ecodes[name]
         except KeyError:
-            sys.exit(f"unknown key name in {where}: {name!r}")
+            raise ConfigError(f"unknown key name in {where}: {name!r}")
         resolved[code] = (name, json_to_action(entry, where))
     return resolved
 
@@ -401,65 +413,142 @@ def make_uinput(dev, actions):
     return evdev.UInput(caps, name="fn-remap")
 
 
+# --- live reload ------------------------------------------------------------
+# The daemon polls the config's mtime once per select() timeout and reloads when
+# it changes. This keeps the exclusive grab held the whole time (a restart would
+# briefly release it) and needs no privilege escalation: the plasmoid already
+# rewrites the file unprivileged, and we just notice.
+
+def config_mtime(path):
+    """The config's mtime in ns, or None if it's currently unreadable/absent."""
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def dispatch(ev, actions, ui, launch):
+    """Apply one input event through the current mapping (the body of the event
+    loop, factored out so reload can swap `actions`/`ui` between calls)."""
+    if ev.type != ecodes.EV_KEY:
+        # forward SYN/LED/MSC etc. verbatim so state stays consistent
+        ui.write_event(ev)
+        return
+
+    entry = actions.get(ev.code)
+    if entry is None:
+        # normal key -- pass straight through
+        ui.write_event(ev)
+        ui.syn()
+        return
+
+    name, action = entry
+    kind = action[0]
+
+    if kind == "pass":
+        ui.write_event(ev)
+        ui.syn()
+    elif kind == "block":
+        pass  # swallow
+    elif kind == "remap":
+        codes = action[1]
+        if ev.value == KEY_DOWN:
+            for c in codes:
+                ui.write(ecodes.EV_KEY, c, KEY_DOWN)
+            ui.syn()
+        elif ev.value == KEY_UP:
+            for c in reversed(codes):
+                ui.write(ecodes.EV_KEY, c, KEY_UP)
+            ui.syn()
+        elif ev.value == KEY_REPEAT:
+            # repeat the last (non-modifier) target so holding still autorepeats
+            ui.write(ecodes.EV_KEY, codes[-1], KEY_REPEAT)
+            ui.syn()
+    elif kind == "run":
+        if ev.value == KEY_DOWN:  # once per press, ignore repeats
+            launch(name, action[1])
+
+
+def reload_actions(path, dev, old_ui, old_actions):
+    """Re-read the config and swap in the new mapping *without ungrabbing*.
+
+    Returns (actions, ui). On any config error the old mapping is kept (the daemon
+    stays useful with the last good config) and a warning is printed. On success
+    the uinput device is rebuilt so freshly-added remap targets (e.g. a new
+    KEY_F13 not in the original capabilities) are advertised; the new device is
+    created before the old is closed to keep the swap gap minimal."""
+    try:
+        new_actions = load_actions(path)
+    except ConfigError as e:
+        print(f"reload skipped -- {e}", file=sys.stderr)
+        return old_actions, old_ui
+    new_ui = make_uinput(dev, new_actions)
+    old_ui.close()
+    print(f"reloaded config {path} ({len(new_actions)} keys)")
+    return new_actions, new_ui
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Kinesis Freestyle2 FN-layer remapper")
     p.add_argument("device", nargs="?",
                    help="evdev node to grab (default: auto-detect Kinesis)")
     p.add_argument("--config", metavar="PATH",
                    help="mapping JSON (default: ~/.config/kinesis-fn/fn_map.json)")
+    p.add_argument("--user", metavar="NAME",
+                   help="desktop user to serve when there's no sudo/pkexec env "
+                        "(used by the systemd system service): its config is read "
+                        "and 'run' actions are demoted to it")
     return p.parse_args()
 
 
 def main():
     args = parse_args()
+    # Under a systemd system service there's no SUDO_USER/PKEXEC_UID, so
+    # invoking_user_ids() can't tell whose config to use or whom to demote "run"
+    # actions to. --user names that human explicitly; feeding it through SUDO_USER
+    # lets the existing resolution (invoking_user_ids) pick it up unchanged.
+    if args.user:
+        os.environ["SUDO_USER"] = args.user
     config_path = resolve_config_path(args.config)
     dev = open_device(resolve_device(args.device))
-    actions = load_actions(config_path)
+    try:
+        actions = load_actions(config_path)  # fail-fast at startup only
+    except ConfigError as e:
+        sys.exit(str(e))
     ui = make_uinput(dev, actions)
     launch = make_run_launcher()
 
     print(f"grabbing {dev.path} ({dev.name!r}); "
           f"config {config_path} ({len(actions)} keys) ... Ctrl-C to stop")
-    dev.grab()
     try:
-        for ev in dev.read_loop():
-            if ev.type != ecodes.EV_KEY:
-                # forward SYN/LED/MSC etc. verbatim so state stays consistent
-                ui.write_event(ev)
-                continue
+        dev.grab()
+    except OSError as e:
+        # EBUSY: another process already holds the exclusive grab (EVIOCGRAB) on this
+        # device -- usually a second copy of this daemon still running. Exit with a
+        # legible one-liner instead of an opaque traceback (under systemd we'd just
+        # crash-loop on Restart=on-failure otherwise).
+        ui.close()
+        sys.exit(f"cannot grab {dev.path}: {e.strerror} -- is another fn_remap "
+                 f"instance already running? (check: pgrep -af fn_remap)")
+    # Event loop with a 1s heartbeat: select() wakes on real key activity, and
+    # its timeout gives us a cheap once-a-second window to notice a config change
+    # and reload live. Both the evdev grab and the process persist across reloads.
+    POLL_INTERVAL = 1.0
+    last_mtime = config_mtime(config_path)
+    try:
+        while True:
+            try:
+                ready, _, _ = select.select([dev.fd], [], [], POLL_INTERVAL)
+            except InterruptedError:
+                continue  # a signal woke select(); just loop back
+            if ready:
+                for ev in dev.read():
+                    dispatch(ev, actions, ui, launch)
 
-            entry = actions.get(ev.code)
-            if entry is None:
-                # normal key -- pass straight through
-                ui.write_event(ev)
-                ui.syn()
-                continue
-
-            name, action = entry
-            kind = action[0]
-
-            if kind == "pass":
-                ui.write_event(ev)
-                ui.syn()
-            elif kind == "block":
-                pass  # swallow
-            elif kind == "remap":
-                codes = action[1]
-                if ev.value == KEY_DOWN:
-                    for c in codes:
-                        ui.write(ecodes.EV_KEY, c, KEY_DOWN)
-                    ui.syn()
-                elif ev.value == KEY_UP:
-                    for c in reversed(codes):
-                        ui.write(ecodes.EV_KEY, c, KEY_UP)
-                    ui.syn()
-                elif ev.value == KEY_REPEAT:
-                    # repeat the last (non-modifier) target so holding still autorepeats
-                    ui.write(ecodes.EV_KEY, codes[-1], KEY_REPEAT)
-                    ui.syn()
-            elif kind == "run":
-                if ev.value == KEY_DOWN:  # once per press, ignore repeats
-                    launch(name, action[1])
+            mtime = config_mtime(config_path)
+            if mtime is not None and mtime != last_mtime:
+                last_mtime = mtime
+                actions, ui = reload_actions(config_path, dev, ui, actions)
     finally:
         dev.ungrab()
         ui.close()

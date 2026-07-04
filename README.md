@@ -27,20 +27,25 @@ each time you press it. Everything is set up from a Plasma widget, no config fil
 ## Requirements
 
 - **KDE Plasma 6** (the applet requires Plasma API ≥ 6.0)
-- **Python 3** with **[python-evdev](https://python-evdev.readthedocs.io/)**
-- **polkit** (`pkexec`) — the plasmoid uses it to start/stop the daemon as root
+- **Python 3** with **[python-evdev](https://python-evdev.readthedocs.io/)** —
+  install it yourself (see below); the daemon can't run without it.
+- **polkit** (`pkexec`) — used once to install the autostart service, and to
+  start/stop it afterwards.
 - A **Kinesis Freestyle2 / KB800** keyboard
-- The daemon needs root: it reads `/dev/input/*` and writes `/dev/uinput`
+- The daemon needs root (it reads `/dev/input/*` and writes `/dev/uinput`), but that
+  root is confined to a single auto-started service — your user account gains no new
+  privileges.
 
 ## Install
 
-```bash
-git clone https://github.com/mnoomnoo/kinesis-FN-mapper.git
-cd kinesis-FN-mapper
-```
+You can install straight from the **KDE Store** (recommended for users) or **from
+source** (recommended for developers — edits are live). Either way you install the
+`python3-evdev` dependency once, and then click **Enable autostart** in the widget a
+single time.
 
-**1. Install the daemon dependency** (`python-evdev`) — use your distro package if
-you have one, otherwise pip:
+### From the KDE Store
+
+**1. Install the daemon dependency** — this is the only terminal step:
 
 ```bash
 sudo dnf install python3-evdev      # Fedora
@@ -48,16 +53,30 @@ sudo dnf install python3-evdev      # Fedora
 # pip install --user evdev          # any distro
 ```
 
-**2. Install the plasmoid.** The recommended way for this repo is a **symlink**, so
-your edits to the source are live with no reinstall step. Just run the bundled
-script:
+**2. Get the widget.** Right-click a panel or the desktop → *Add Widgets…* → *Get New
+Widgets…* → *Download New Plasma Widgets*, then search **"Kinesis FN Mapper"** and
+install. (Or grab the `.plasmoid` from the [store page](https://store.kde.org/p/2364571)
+and run `kpackagetool6 --type Plasma/Applet -i <file>.plasmoid`.)
+
+**3. Add it.** *Add Widgets…* → search **"Kinesis FN Mapper"** → add it to a panel or
+the desktop.
+
+**4. Enable autostart (once).** Open the widget and click **Enable autostart**;
+authorise the **single** polkit prompt. This installs the daemon as a system service
+that starts now and on every boot — no per-session Start, no repeated prompts.
+
+### From source (developers)
 
 ```bash
+git clone https://github.com/mnoomnoo/kinesis-FN-mapper.git
+cd kinesis-FN-mapper
+sudo dnf install python3-evdev      # (or apt / pip, as above)
 ./install.sh
 ```
 
-It symlinks both the applet package **and** its icon back to the repo, refreshes the
-caches, and reloads the shell. Doing it by hand is equivalent to:
+`install.sh` symlinks both the applet package **and** its icon back to the repo (so
+your edits are live with no reinstall), refreshes the caches, and reloads the shell.
+Doing it by hand is equivalent to:
 
 ```bash
 # applet package
@@ -68,25 +87,24 @@ ln -s "$PWD/plasmoid/contents/icons/kinesisfn.svg" \
 kquitapp6 plasmashell && kstart plasmashell   # reload the shell
 ```
 
+Then add the widget and click **Enable autostart** exactly as in the store flow above.
+(The equivalent CLI, if you'd rather not use the button, is
+`sudo plasmoid/contents/daemon/kinesis-fn-setup.sh enable "$USER" "$HOME" "$PWD/plasmoid/contents/daemon/fn_remap.py"`.)
+
 > ℹ️ **Why the icon symlink?** The system-tray icon is loaded from the package by
 > path, but the **"Add Widgets" explorer** resolves `metadata.json`'s
 > `"Icon": "kinesisfn"` through the **freedesktop icon theme** — not the package. So
-> the SVG must be installed into an icon theme (`hicolor/scalable/apps`), or the
-> widget-listing entry shows a blank icon.
+> the SVG must be installed into an icon theme (`hicolor/scalable/apps`). `install.sh`
+> does this; a plain KDE Store install does not, so the *explorer listing* icon may be
+> blank there (the in-panel icon is unaffected).
 
 > ⚠️ **Never run `kpackagetool6 --type Plasma/Applet -u plasmoid` against the
 > symlinked install.** The upgrade removes the existing package first, and with a
 > symlinked dev install that follows the link and **deletes your source tree**. To
 > apply changes just restart plasmashell (above) or re-add the widget.
 
-If you'd rather install a plain **copy** (not a dev symlink), use:
-
-```bash
-kpackagetool6 --type Plasma/Applet -i plasmoid
-```
-
-**3. Add the widget.** Right-click a panel or the desktop → *Add Widgets…* → search
-for **"Kinesis FN Mapper"**.
+If you'd rather install a plain **copy** (not a dev symlink), use
+`kpackagetool6 --type Plasma/Applet -i plasmoid`.
 
 ## Usage
 
@@ -98,13 +116,15 @@ for **"Kinesis FN Mapper"**.
    - **Block** — key sends nothing.
    - **Remap** — send another key, optionally with Ctrl/Alt/Shift/Super held.
    - **Run command** — run a shell command once per press (e.g. `kcalc`).
-4. Click **Save**.
-5. Click **Start** (or **Restart** if it's already running) and authorise the
-   `pkexec` prompt.
+4. Click **Save** — the change applies within about a second. No restart, no prompt.
 
-The status pill shows **Running** / **Stopped** (polled every 2 s). The daemon reads
-the config **once at startup**, so after saving changes you must **Restart** it to
-apply them.
+Once you've clicked **Enable autostart** (see Install), the daemon runs as a service
+that comes up on every boot — you never start it manually again. The status pill shows
+**Running** / **Stopped** (polled every 2 s), and the **Start**/**Stop** buttons control
+the service if you want to. The daemon **watches the config file and reloads it live**,
+so saved edits take effect within a second while the daemon keeps its keyboard grab —
+there's nothing to restart. (A **Restart** button is still there as a manual fallback; a
+bad edit is ignored with a log warning and the last good mapping stays in force.)
 
 ### Config file
 
@@ -135,19 +155,45 @@ object keyed by evdev `KEY_*` name, one entry per FN key:
   root, the command is launched **as your desktop user in your current session**, so GUI
   apps (e.g. `code`, `kcalc`) open normally.
 
-You can edit this file by hand instead of using the widget; restart the daemon either
-way.
+You can edit this file by hand instead of using the widget; the daemon watches it and
+picks up your changes automatically within a second — no restart needed.
+
+### Autostart / the service
+
+**Enable autostart** (in the widget, or the `kinesis-fn-setup.sh` CLI shown in Install)
+installs two things, as root:
+
+- `/usr/local/bin/kinesis-fn-remap` — a **root-owned copy** of the daemon (copied out of
+  the package so systemd never runs root code from a user-writable path).
+- `/etc/systemd/system/kinesis-fn.service` — a system service with your user and config
+  path baked into its `ExecStart` (`--user <you> --config ~/.config/kinesis-fn/fn_map.json`).
+  It's `enable`d, so it starts on every boot.
+
+Check it any time with `systemctl status kinesis-fn` (or `journalctl -u kinesis-fn`).
+
+To remove it, click **Disable autostart** in the widget, or run:
+
+```bash
+sudo systemctl disable --now kinesis-fn \
+  && sudo rm -f /etc/systemd/system/kinesis-fn.service /usr/local/bin/kinesis-fn-remap \
+  && sudo systemctl daemon-reload
+```
 
 ### Running the daemon standalone
 
 ```bash
-sudo python3 fn_remap.py [/dev/input/eventN] [--config PATH]
+# after Enable autostart (root-owned copy):
+sudo /usr/local/bin/kinesis-fn-remap [/dev/input/eventN] [--config PATH]
+# from a source checkout:
+sudo python3 plasmoid/contents/daemon/fn_remap.py [/dev/input/eventN] [--config PATH]
 ```
 
 - The device defaults to auto-detecting the Kinesis node via
   `/dev/input/by-id/*Kinesis*-event-kbd`.
 - `--config` defaults to the invoking user's `~/.config/kinesis-fn/fn_map.json`
   (resolved correctly even under `sudo`/`pkexec`).
+- `--user NAME` is only needed when there's no `sudo`/`pkexec` environment to reveal
+  the human — i.e. the systemd service uses it. Under `sudo` it's auto-resolved.
 - Stop with **Ctrl-C** — the grab is always released on exit, so the keyboard
   recovers.
 
@@ -175,8 +221,9 @@ installing it — point `plasmoidviewer` (from `plasma-sdk`) at the package dir:
 plasmoidviewer -a ~/pprojects/kinesis-FN-mapper/plasmoid
 ```
 
-It still locates `fn_remap.py` (resolved relative to the package), so `Start`/
-`Restart` work as usual.
+The bundled daemon and setup script live in the package under `contents/daemon/`, so
+the widget's **Enable autostart** / **Start** / **Restart** actions resolve them
+correctly here too.
 
 ### Packaging a release
 
@@ -197,15 +244,16 @@ or the store will reject the re-upload as unchanged.
 
 The FN key set is defined in **two** places that must stay in sync:
 
-- `DEFAULT_FN_ACTIONS` in `fn_remap.py` — the daemon's defaults and the authoritative
-  key set.
+- `DEFAULT_FN_ACTIONS` in `plasmoid/contents/daemon/fn_remap.py` — the daemon's
+  defaults and the authoritative key set.
 - `FN_KEYS` in `keydata.js` — what the editor exposes; also add the code to
   `NUMPAD_GRID` or `FN_COLUMN` so it appears as a tile.
 
 ### Debugging the daemon
 
-Run it in a terminal (`sudo python3 fn_remap.py`) to watch its startup line (which
-device/config it grabbed and how many keys) and `run`-action logs.
+Run it in a terminal (`sudo python3 plasmoid/contents/daemon/fn_remap.py`) to watch its
+startup line (which device/config it grabbed and how many keys) and `run`-action logs.
+Once the service is installed, `journalctl -u kinesis-fn -f` shows the same output.
 
 ## How it works
 
@@ -216,8 +264,9 @@ codes). `fn_remap.py` takes exclusive control of the keyboard's evdev node with
 keyboard, and for the FN-layer keycodes applies the action from the config. Keying
 off those codes is effectively "FN + key".
 
-The plasmoid never touches the keyboard directly — it just edits the shared JSON and
-runs the daemon via `pkexec`. The config is the contract between the two.
+The plasmoid never touches the keyboard directly — it just edits the shared JSON and,
+once you've enabled autostart, controls a systemd system service that runs the daemon
+(installed via a one-time `pkexec` step). The config is the contract between the two.
 
 ## License & Trademarks
 

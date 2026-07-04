@@ -39,3 +39,5 @@ if command -v kquitapp6 >/dev/null 2>&1; then
 fi
 
 echo "Installed. Add the widget via: right-click panel/desktop -> Add Widgets -> \"Kinesis FN Mapper\""
+echo "Then open it and click \"Enable autostart\" once to install the boot service."
+echo "(Equivalent CLI: sudo $REPO/plasmoid/contents/daemon/kinesis-fn-setup.sh enable \"\$USER\" \"\$HOME\" \"$REPO/plasmoid/contents/daemon/fn_remap.py\")"

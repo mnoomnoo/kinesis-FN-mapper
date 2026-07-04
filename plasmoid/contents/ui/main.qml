@@ -11,25 +11,29 @@ import "keydata.js" as KeyData
 PlasmoidItem {
     id: root
 
-    // Path to the config-driven daemon. Derived at startup from this package's
-    // own install location (see Component.onCompleted) so the repo works from
-    // any clone location on any machine — no hardcoded path.
+    // Paths to the bundled daemon and its setup script, both under
+    // <pkg>/contents/daemon/. Derived at startup from this package's own install
+    // location (see Component.onCompleted) so it works from any clone/store
+    // location on any machine — no hardcoded path. daemonPath is handed to the
+    // setup script, which installs a root-owned copy + a systemd system service.
     property string daemonPath: ""
+    property string setupScript: ""
     property string homePath: ""
+    property string userName: ""
     property string configPath: ""
 
     property bool running: false
-    property bool dirty: false
-    // in-memory key edits not yet written to disk (distinct from `dirty`, which
-    // means the saved config differs from what the daemon last (re)started with)
+    // whether the kinesis-fn.service systemd unit is installed (autostart set up)
+    property bool serviceInstalled: false
+    // whether python3-evdev is importable — the daemon can't run without it, and
+    // a missing dep would make the service fail its Restart=on-failure loop
+    // silently, so we guard the "Enable autostart" action on it.
+    property bool evdevOk: true
+    // in-memory key edits not yet written to disk. Once saved, the daemon's
+    // file-watch reloads the config live, so there's no separate "needs restart"
+    // state to track.
     property bool unsaved: false
     property string message: ""
-
-    // Matches a real daemon process only. Anchored to "^python3 " so it never
-    // matches the pkexec/sh wrapper that carries the launch command ("… python3
-    // /path/fn_remap.py …") as an argument — otherwise restart's own pkill would
-    // SIGTERM its parent shell before the relaunch runs, and nothing comes back up.
-    readonly property string daemonPattern: "^python3 .*fn_remap\\.py"
 
     property var groups: ["Numpad overlay", "Media keys"]
     property var rowsByGroup: ({})   // group name -> array of entry objects (shared refs)
@@ -112,7 +116,6 @@ PlasmoidItem {
         // at startup instead of showing an empty reserved slot
         root.selectedEntry = byCode["KEY_MUTE"] || (flat.length ? flat[0] : null)
         root.rev++
-        root.dirty = false
     }
 
     // --- config save --------------------------------------------------------
@@ -140,35 +143,30 @@ PlasmoidItem {
                   " | base64 -d > " + sh(configPath)
         executable.run(cmd, function (out, err, code) {
             // On success the file now matches the in-memory model, so `unsaved`
-            // clears. `dirty` is *set* here: it means "config changed since the
-            // daemon last (re)started", so it stays true until a restart even
-            // though the file is saved. Cleared in start/restartDaemon.
-            if (code === 0) { root.unsaved = false; root.dirty = true; root.notify("Saved — restart to apply") }
+            // clears. The daemon watches the config file and reloads itself
+            // within ~1s, so there's nothing more for the user to do — no restart.
+            if (code === 0) { root.unsaved = false; root.notify("Saved — applies within a second") }
             else { root.notify("Save failed: " + err.trim()) }
         })
     }
 
-    // Rebuild every key from the factory defaults, persist, and flag the daemon
-    // as out of date. buildRows() resets dirty to false, so re-set it after.
+    // Rebuild every key from the factory defaults and persist; the daemon's
+    // file-watch picks the new config up within ~1s, no restart needed.
     function resetDefaults() {
         root.buildRows(KeyData.DEFAULTS)   // every key back to pass-through
-        root.dirty = true
         root.writeConfig()
-        root.notify("Reset to defaults — restart to apply")
+        root.notify("Reset to defaults — applied")
     }
 
     // Throw away in-memory edits by reloading the saved file (the file *is* the
-    // last-saved state). buildRows() resets dirty to false and re-selects Mute,
-    // so restore the prior dirty (a discard doesn't change the disk-vs-daemon
-    // delta) and the open key afterwards.
+    // last-saved state). buildRows() re-selects Mute, so restore the open key
+    // afterwards.
     function discardChanges() {
-        var wasDirty = root.dirty
         var selCode  = root.selectedEntry ? root.selectedEntry.code : ""
         executable.run("cat " + sh(configPath) + " 2>/dev/null", function (out) {
             var cfg = null, txt = out.trim()
             if (txt.length) { try { cfg = JSON.parse(txt) } catch (e) {} }
             root.buildRows(cfg)
-            root.dirty = wasDirty
             root.unsaved = false
             if (selCode && root.rowByCode[selCode])
                 root.selectedEntry = root.rowByCode[selCode]
@@ -176,30 +174,60 @@ PlasmoidItem {
         })
     }
 
-    // --- daemon control -----------------------------------------------------
+    // --- daemon control (via the systemd system service) --------------------
+    // Two facts per poll: is the unit installed (autostart set up?) and is it
+    // active (running?). Querying needs no privilege — only start/stop/setup do.
     function refreshStatus() {
-        executable.run("pgrep -f " + sh(root.daemonPattern) + " >/dev/null && echo up || echo down",
-                       function (out) { root.running = (out.trim() === "up") })
+        var cmd = "test -f /etc/systemd/system/kinesis-fn.service && echo yes || echo no; " +
+                  "systemctl is-active --quiet kinesis-fn.service && echo up || echo down"
+        executable.run(cmd, function (out) {
+            var lines = out.trim().split(/\s+/)
+            root.serviceInstalled = (lines[0] === "yes")
+            root.running = (lines[1] === "up")
+        })
     }
 
     // pkexec exits 126 when the auth dialog is dismissed and 127 when the user
     // is not authorised — treat both as "the action never ran".
     function authCancelled(code) { return code === 126 || code === 127 }
 
+    // One-time setup: install the root-owned daemon + enable the boot service.
+    // Guarded on evdev so we never leave a service that just crash-loops.
+    function enableAutostart() {
+        if (!root.evdevOk) { root.notify("Install python3-evdev first, then enable autostart"); return }
+        root.notify("Enabling autostart (authorise in the prompt)…")
+        var cmd = "pkexec " + sh(root.setupScript) + " enable " +
+                  sh(root.userName) + " " + sh(root.homePath) + " " + sh(root.daemonPath)
+        executable.run(cmd, function (out, err, code) {
+            if (authCancelled(code)) { root.flash("Setup cancelled") }
+            else if (code !== 0) { root.notify("Setup failed: " + err.trim()) }
+            else { root.flash("Autostart enabled") }
+            statusDelay.restart()
+        })
+    }
+
+    function disableAutostart() {
+        root.notify("Disabling autostart (authorise in the prompt)…")
+        executable.run("pkexec " + sh(root.setupScript) + " disable", function (out, err, code) {
+            if (authCancelled(code)) { root.flash("Disable cancelled") }
+            else if (code !== 0) { root.notify("Disable failed: " + err.trim()) }
+            else { root.flash("Autostart disabled") }
+            statusDelay.restart()
+        })
+    }
+
     function startDaemon() {
         root.notify("Starting (authorise in the prompt)…")
-        var inner = "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function (out, err, code) {
+        executable.run("pkexec systemctl start kinesis-fn.service", function (out, err, code) {
             if (authCancelled(code)) { root.flash("Start cancelled") }
-            else { root.dirty = false; root.flash("Started") }
+            else { root.flash("Started") }
             statusDelay.restart()
         })
     }
 
     function stopDaemon() {
         root.notify("Stopping…")
-        executable.run("pkexec pkill -f " + sh(root.daemonPattern), function (out, err, code) {
-            // pkill returns 1 when nothing matched (already stopped) — still a stop.
+        executable.run("pkexec systemctl stop kinesis-fn.service", function (out, err, code) {
             root.flash(authCancelled(code) ? "Stop cancelled" : "Stopped")
             statusDelay.restart()
         })
@@ -207,11 +235,9 @@ PlasmoidItem {
 
     function restartDaemon() {
         root.notify("Restarting (authorise in the prompt)…")
-        var inner = "pkill -f " + sh(root.daemonPattern) + "; sleep 0.5; " +
-                    "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function (out, err, code) {
+        executable.run("pkexec systemctl restart kinesis-fn.service", function (out, err, code) {
             if (authCancelled(code)) { root.flash("Restart cancelled") }
-            else { root.dirty = false; root.flash("Restarted") }
+            else { root.flash("Restarted") }
             statusDelay.restart()
         })
     }
@@ -228,21 +254,37 @@ PlasmoidItem {
     function notify(m) { msgClear.stop(); root.message = m }
 
     Component.onCompleted: {
-        // Derive daemonPath from this package's own location: main.qml lives at
-        // <pkg>/contents/ui/, so fn_remap.py is three dirs up. realpath resolves
-        // the install symlink back to the real repo (and fails if it's missing).
+        // Derive the daemon + setup-script paths from this package's own location:
+        // main.qml lives at <pkg>/contents/ui/, and both bundled files sit under
+        // <pkg>/contents/daemon/. realpath resolves the dev-install symlink back to
+        // the real repo (and, for a store copy install, canonicalises the path).
         var uiDir = Qt.resolvedUrl(".").toString()
                        .replace(/^file:\/\//, "").replace(/\/$/, "")
-        root.daemonPath = uiDir + "/../../../fn_remap.py"   // portable fallback
-        executable.run("realpath -e " + sh(root.daemonPath),
-            function (out, err, code) {
-                var p = out.trim()
-                if (code === 0 && p.length) root.daemonPath = p   // clean, verified path
-                else root.notify("Could not locate fn_remap.py — using default path")
+        root.daemonPath  = uiDir + "/../daemon/fn_remap.py"
+        root.setupScript = uiDir + "/../daemon/kinesis-fn-setup.sh"
+        executable.run("realpath -e " + sh(root.daemonPath), function (out, err, code) {
+            if (code === 0 && out.trim().length) root.daemonPath = out.trim()
+            else root.notify("Could not locate the bundled daemon (fn_remap.py)")
+        })
+        executable.run("realpath -e " + sh(root.setupScript), function (out, err, code) {
+            if (code === 0 && out.trim().length) root.setupScript = out.trim()
+        })
+
+        // The daemon needs python3-evdev; warn (and block Enable autostart) if it's
+        // missing rather than installing a service that just crash-loops at boot.
+        executable.run("python3 -c 'import evdev' >/dev/null 2>&1 && echo ok || echo no",
+            function (out) {
+                root.evdevOk = (out.trim() === "ok")
+                if (!root.evdevOk && !root.serviceInstalled)
+                    root.notify("python3-evdev is not installed — install it, then enable autostart")
             })
 
-        executable.run("printf %s \"$HOME\"", function (out) {
-            root.homePath = out.trim()
+        // Identity for the setup script (--user) and config path. printf leaves no
+        // trailing newline on $HOME, so id's newline cleanly separates the two.
+        executable.run("id -un; printf %s \"$HOME\"", function (out) {
+            var parts = out.split("\n")
+            root.userName = (parts[0] || "").trim()
+            root.homePath = (parts[1] || "").trim()
             root.configPath = root.homePath + "/.config/kinesis-fn/fn_map.json"
             root.readConfig()
             root.refreshStatus()
@@ -321,16 +363,14 @@ PlasmoidItem {
                     implicitHeight: Kirigami.Units.gridUnit * 1.4
                     implicitWidth: statusRow.implicitWidth + Kirigami.Units.largeSpacing
                     color: Qt.rgba(pillColor.r, pillColor.g, pillColor.b, 0.15)
-                    // running but with unsaved-to-daemon config changes pending
-                    readonly property bool needsRestart: root.running && root.dirty
-                    readonly property color pillColor: !root.running ? Kirigami.Theme.disabledTextColor
-                                                     : (needsRestart ? "#f39c12" : "#2ecc71")
+                    // saved edits apply live (the daemon watches its config), so
+                    // the pill only ever reports running vs. stopped
+                    readonly property color pillColor: root.running ? "#2ecc71"
+                                                     : Kirigami.Theme.disabledTextColor
 
                     HoverHandler { id: pillHover }
-                    QQC2.ToolTip.text: statusPill.needsRestart
-                        ? "Config changed — restart the daemon to apply"
-                        : (root.running ? "FN-remap daemon is running"
-                                        : "FN-remap daemon is stopped")
+                    QQC2.ToolTip.text: root.running ? "FN-remap daemon is running"
+                                                    : "FN-remap daemon is stopped"
                     QQC2.ToolTip.visible: pillHover.hovered
 
                     RowLayout {
@@ -340,18 +380,9 @@ PlasmoidItem {
                         Rectangle {
                             width: Kirigami.Units.gridUnit * 0.6; height: width; radius: width / 2
                             color: statusPill.pillColor
-                            // pulse to draw the eye when a restart is pending
-                            SequentialAnimation on opacity {
-                                running: statusPill.needsRestart
-                                loops: Animation.Infinite
-                                alwaysRunToEnd: true
-                                NumberAnimation { to: 0.25; duration: 600 }
-                                NumberAnimation { to: 1.0;  duration: 600 }
-                            }
                         }
                         PlasmaComponents3.Label {
-                            text: statusPill.needsRestart ? "Restart to apply"
-                                : (root.running ? "Running" : "Stopped")
+                            text: root.running ? "Running" : "Stopped"
                             color: statusPill.pillColor
                         }
                     }
@@ -359,7 +390,25 @@ PlasmoidItem {
 
                 Item { Layout.fillWidth: true }
 
+                // Not set up yet: a single one-time "Enable autostart" that installs
+                // the root-owned daemon + boot service (one polkit prompt, ever).
                 PlasmaComponents3.Button {
+                    visible: !root.serviceInstalled
+                    icon.name: "run-install"
+                    text: "Enable autostart"
+                    enabled: root.evdevOk
+                    highlighted: true
+                    QQC2.ToolTip.text: root.evdevOk
+                        ? "Install the daemon as a service that starts at boot (one-time, authorise in the prompt)"
+                        : "Install python3-evdev first"
+                    QQC2.ToolTip.visible: hovered
+                    onClicked: root.enableAutostart()
+                }
+
+                // Set up: control the service (start/stop, restart to apply edits),
+                // plus remove it. start/stop/restart prompt; the boot case does not.
+                PlasmaComponents3.Button {
+                    visible: root.serviceInstalled
                     icon.name: root.running ? "media-playback-stop" : "media-playback-start"
                     text: root.running ? "Stop" : "Start"
                     QQC2.ToolTip.text: root.running
@@ -369,13 +418,22 @@ PlasmoidItem {
                     onClicked: root.running ? root.stopDaemon() : root.startDaemon()
                 }
                 PlasmaComponents3.Button {
+                    visible: root.serviceInstalled
                     display: PlasmaComponents3.AbstractButton.IconOnly
                     icon.name: "view-refresh"
                     text: "Restart daemon"
-                    highlighted: root.dirty
                     QQC2.ToolTip.text: text
                     QQC2.ToolTip.visible: hovered
                     onClicked: root.restartDaemon()
+                }
+                PlasmaComponents3.Button {
+                    visible: root.serviceInstalled
+                    display: PlasmaComponents3.AbstractButton.IconOnly
+                    icon.name: "list-remove"
+                    text: "Disable autostart"
+                    QQC2.ToolTip.text: "Remove the autostart service and its daemon"
+                    QQC2.ToolTip.visible: hovered
+                    onClicked: root.disableAutostart()
                 }
             }
 

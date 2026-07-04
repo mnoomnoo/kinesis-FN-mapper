@@ -10,7 +10,7 @@
             { "Name": "Oliver B" }
         ],
         "License": "MIT",
-        "Version": "1.0.0",
+        "Version": "1.1.0",
         "Website": "https://github.com/mnoomnoo/kinesis-FN-mapper",
         "BugReportUrl": "https://github.com/mnoomnoo/kinesis-FN-mapper/issues",
         "EnabledByDefault": true
