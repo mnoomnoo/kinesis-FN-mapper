@@ -130,9 +130,21 @@ PlasmoidItem {
         var cmd = "mkdir -p " + sh(dir) + " && printf %s " + sh(b64) +
                   " | base64 -d > " + sh(configPath)
         executable.run(cmd, function (out, err, code) {
-            if (code === 0) { root.dirty = false; root.message = "Saved — restart to apply" }
+            // dirty is left set here: it now means "config changed since the
+            // daemon last (re)started", so it stays true until a restart even
+            // though the file is saved. Cleared in start/restartDaemon.
+            if (code === 0) { root.message = "Saved — restart to apply" }
             else { root.message = "Save failed: " + err.trim() }
         })
+    }
+
+    // Rebuild every key from the factory defaults, persist, and flag the daemon
+    // as out of date. buildRows() resets dirty to false, so re-set it after.
+    function resetDefaults() {
+        root.buildRows(KeyData.DEFAULTS)   // every key back to pass-through
+        root.dirty = true
+        root.writeConfig()
+        root.message = "Reset to defaults — restart to apply"
     }
 
     // --- daemon control -----------------------------------------------------
@@ -144,7 +156,7 @@ PlasmoidItem {
     function startDaemon() {
         root.message = "Starting (authorise in the prompt)…"
         var inner = "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function () { statusDelay.restart() })
+        executable.run("pkexec sh -c " + sh(inner), function () { root.dirty = false; statusDelay.restart() })
     }
 
     function stopDaemon() {
@@ -157,10 +169,11 @@ PlasmoidItem {
         root.message = "Restarting (authorise in the prompt)…"
         var inner = "pkill -f 'python3.*fn_remap\\.py'; sleep 0.3; " +
                     "setsid -f python3 " + sh(daemonPath) + " --config " + sh(configPath) + " >/dev/null 2>&1"
-        executable.run("pkexec sh -c " + sh(inner), function () { statusDelay.restart() })
+        executable.run("pkexec sh -c " + sh(inner), function () { root.dirty = false; statusDelay.restart() })
     }
 
     Timer { id: statusDelay; interval: 800; onTriggered: root.refreshStatus() }
+    Timer { id: saveTimer; interval: 500; onTriggered: root.writeConfig() }
     Timer { interval: 2000; running: true; repeat: true; onTriggered: root.refreshStatus() }
 
     Component.onCompleted: {
@@ -383,25 +396,40 @@ PlasmoidItem {
                 opacity: root.selectedEntry !== null ? 1 : 0
                 enabled: root.selectedEntry !== null
                 entry: root.selectedEntry
-                onEdited: { root.dirty = true; root.rev++ }
+                onEdited: { root.dirty = true; root.rev++; saveTimer.restart() }
             }
 
-            // footer: reload / save
+            // footer: reset to defaults (edits auto-save; no manual save/reload)
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
                 Item { Layout.fillWidth: true }
                 PlasmaComponents3.Button {
-                    text: "Reload"; icon.name: "document-revert"
-                    onClicked: { root.message = ""; root.readConfig() }
-                }
-                PlasmaComponents3.Button {
-                    text: "Save"; icon.name: "document-save"
-                    enabled: root.dirty
-                    highlighted: root.dirty
-                    onClicked: root.writeConfig()
+                    text: "Reset to defaults"; icon.name: "edit-undo"
+                    onClicked: resetDialog.open()
                 }
             }
+        }
+
+        // confirm before wiping every custom mapping — the reset is auto-saved
+        // to disk immediately, so there is no undo
+        Kirigami.PromptDialog {
+            id: resetDialog
+            title: "Reset to defaults?"
+            subtitle: "This clears every custom mapping and cannot be undone."
+            standardButtons: Kirigami.Dialog.NoButton
+            customFooterActions: [
+                Kirigami.Action {
+                    text: "Cancel"
+                    icon.name: "dialog-cancel"
+                    onTriggered: resetDialog.close()
+                },
+                Kirigami.Action {
+                    text: "Reset"
+                    icon.name: "edit-undo"
+                    onTriggered: { root.resetDefaults(); resetDialog.close() }
+                }
+            ]
         }
     }
 }
