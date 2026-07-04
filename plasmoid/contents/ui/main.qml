@@ -291,6 +291,10 @@ PlasmoidItem {
                 PlasmaComponents3.Button {
                     icon.name: root.running ? "media-playback-stop" : "media-playback-start"
                     text: root.running ? "Stop" : "Start"
+                    QQC2.ToolTip.text: root.running
+                        ? "Stop the FN-remap daemon"
+                        : "Start the FN-remap daemon (authorise in the prompt)"
+                    QQC2.ToolTip.visible: hovered
                     onClicked: root.running ? root.stopDaemon() : root.startDaemon()
                 }
                 PlasmaComponents3.Button {
@@ -406,6 +410,8 @@ PlasmoidItem {
                 Item { Layout.fillWidth: true }
                 PlasmaComponents3.Button {
                     text: "Reset to defaults"; icon.name: "edit-undo"
+                    QQC2.ToolTip.text: "Restore every key to its default mapping"
+                    QQC2.ToolTip.visible: hovered
                     onClicked: resetDialog.open()
                 }
             }
