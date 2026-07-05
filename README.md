@@ -179,6 +179,30 @@ sudo systemctl disable --now kinesis-fn \
   && sudo systemctl daemon-reload
 ```
 
+## Removing the widget / resetting to defaults
+
+Removing the widget from the panel **does not** stop the daemon or reset your mappings —
+the service keeps running and your keyboard stays remapped. Clean up first:
+
+- **To go back to plain pass-through but keep the daemon:** click **Reset to defaults**
+  in the widget (every key back to pass-through, applied within a second).
+- **Before removing the widget:** click **Disable autostart** — it stops and removes the
+  daemon service (one `pkexec` prompt), so the keyboard returns to native behavior. Then
+  remove the widget as usual.
+
+`Disable autostart` leaves your mapping file behind. For a **complete manual teardown**:
+
+```bash
+# 1. stop + remove the daemon service and its root-owned binary
+sudo systemctl disable --now kinesis-fn.service
+sudo rm -f /etc/systemd/system/kinesis-fn.service /usr/local/bin/kinesis-fn-remap
+sudo systemctl daemon-reload
+
+# 2. remove the mapping config (the only user-side state; safe to delete —
+#    it's re-seeded to all-pass on the next daemon start)
+rm -f ~/.config/kinesis-fn/fn_map.json
+```
+
 ### Running the daemon standalone
 
 ```bash
